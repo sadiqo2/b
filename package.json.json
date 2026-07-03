@@ -1,0 +1,17 @@
+{
+  "name": "ftth-checker",
+  "version": "1.0.0",
+  "description": "FTTH PIN Checker with Telegram Control",
+  "main": "s.js",
+  "scripts": {
+    "start": "node s.js",
+    "dev": "nodemon s.js"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "telegraf": "^4.15.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.0"
+  }
+}
