@@ -20,8 +20,8 @@ const CONFIG = {
 };
 
 // Telegram - عدّل هذي!
-const BOT_TOKEN = process.env.5015755042:AAGW_mUPwROeXraHWvNaN2e67jcEILGh9_E || '';  // أو حط التوكن مباشرة
-const CHAT_ID = process.env.2121443469 || '';      // أو حط الـ ID مباشرة
+const BOT_TOKEN = process.env.BOT_TOKEN || '5015755042:AAGW_mUPwROeXraHWvNaN2e67jcEILGh9_E';  
+const CHAT_ID = process.env.CHAT_ID || '2121443469';      
 
 // ملفات
 const FILES = {
